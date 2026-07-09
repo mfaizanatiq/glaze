@@ -1,7 +1,7 @@
 {
-  "name": "design-md-generator",
+  "name": "glaze",
   "version": "1.0.0",
-  "description": "Export Figma variables and styles to DESIGN.md — open agent-agnostic design context for Cursor, Claude, and any AI agent",
+  "description": "Glaze — full design context from Figma to DESIGN.md for Cursor, Claude, and any AI agent",
   "scripts": {
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",

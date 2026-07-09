@@ -1,6 +1,6 @@
-# DESIGN.md Generator — Figma Plugin
+# Glaze — Figma plugin
 
-Export Figma **variables and styles** into [`DESIGN.md`](https://github.com/google-labs-code/design.md) — an open, vendor-neutral format that gives **any AI agent** a persistent, structured understanding of your design system.
+**Glaze** turns your Figma file into agent-ready design context — variables, styles, components, and guidelines — exported as [`DESIGN.md`](https://github.com/google-labs-code/design.md).
 
 Works with **Cursor**, **Claude**, **Windsurf**, **GitHub Copilot**, and any agent that reads project context files. Place `DESIGN.md` at your repo root alongside `AGENTS.md`.
 
@@ -14,13 +14,14 @@ Works with **Cursor**, **Claude**, **Windsurf**, **GitHub Copilot**, and any age
 
 DESIGN.md is an [open specification](https://github.com/google-labs-code/design.md/blob/main/docs/spec.md) (not tied to a single tool). Optional [W3C DTCG](https://www.w3.org/community/reports/design-tokens/CG-FINAL-format-20251028/) export adds cross-platform `tokens.json` for Style Dictionary and other pipelines.
 
-## What it does
+## What Glaze does
 
 1. **Reads all local Figma variables** across every collection (default mode each)
 2. **Includes Figma styles** — text styles as composite typography hyper tokens, paint styles as colors, effect styles as shadows
-3. **Optional W3C DTCG export** — appends `tokens.json` (Format Module 2025.10)
-4. Maps variables to DESIGN.md token groups with alias resolution
-5. Generates YAML front matter + prose with versioning context and Figma descriptions
+3. **Session capture** — visit library files, capture published components, merge into export
+4. **Optional W3C DTCG export** — appends `tokens.json` (Format Module 2025.10)
+5. Maps variables to DESIGN.md token groups with alias resolution
+6. Generates YAML front matter + prose with versioning context and Figma descriptions
 
 ## Quick start
 
@@ -34,7 +35,7 @@ npm run build
 1. Open **Figma Desktop**
 2. **Plugins → Development → Import plugin from manifest…**
 3. Select `manifest.json`
-4. Run **DESIGN.md Generator**
+4. Run **Glaze**
 
 ### Use with your agent
 
@@ -57,6 +58,7 @@ npm run build
 |---|---|
 | **All collections (default)** | Every variable collection, each using its default mode |
 | **Include Figma styles** | Text → `text-style.*` composites; Paint → colors; Effect → shadows |
+| **Session components** | Merged lookup tables from cached library files |
 | **Include W3C DTCG** | Appends `tokens.json` with `$type` / `$value` per DTCG 2025.10 |
 | **Generate prose** | Overview, versioning context, per-token descriptions |
 

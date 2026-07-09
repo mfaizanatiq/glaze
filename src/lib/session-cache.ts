@@ -2,7 +2,7 @@ import type { CapturedComponent, SessionCache, SessionFileEntry, SessionSummary 
 
 export type { CapturedComponent, SessionFileEntry, SessionSummary, SessionCache };
 
-const STORAGE_KEY = "design-md-session-v1";
+const STORAGE_KEY = "glaze-session-v1";
 
 function emptyCache(): SessionCache {
   return { version: 1, updatedAt: new Date().toISOString(), files: {} };

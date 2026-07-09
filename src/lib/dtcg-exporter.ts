@@ -139,7 +139,7 @@ export function exportDtcgTokens(
         name: tokens.name,
       },
       "com.figma": {
-        generator: "design-md-generator",
+        generator: "glaze",
         dtcg: DTCG_SPEC_VERSION,
       },
     },

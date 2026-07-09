@@ -1,6 +1,6 @@
 {
-  "name": "DESIGN.md — Agent Design Spec",
-  "id": "design-md-generator",
+  "name": "Glaze — Design context for agents",
+  "id": "glaze",
   "api": "1.0.0",
   "main": "dist/code.js",
   "ui": "dist/ui.html",
