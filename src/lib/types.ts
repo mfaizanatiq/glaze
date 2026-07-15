@@ -32,13 +32,35 @@ export interface ComponentToken {
   [property: string]: string | number;
 }
 
+export interface ComponentPropDefinition {
+  name: string;
+  type: string;
+  defaultValue?: string | boolean | number;
+  options?: string[];
+  description?: string;
+}
+
+export interface ComponentLink {
+  name: string;
+  url: string;
+  kind: "code-connect" | "documentation" | "dev-resource";
+}
+
 export interface CapturedComponent {
   name: string;
+  nodeId: string;
+  componentSetNodeId?: string;
   figmaKey: string;
+  componentSetKey?: string;
   tokenKey: string;
   remote: boolean;
   description?: string;
+  figmaUrl?: string;
+  documentationLinks?: string[];
+  codeConnectLinks?: ComponentLink[];
+  devResources?: ComponentLink[];
   variantProperties?: Record<string, string>;
+  propertyDefinitions?: ComponentPropDefinition[];
   tokens: ComponentToken;
 }
 
@@ -74,6 +96,7 @@ export interface TokenDocumentation {
 }
 
 export interface CollectionExportInfo {
+  id: string;
   name: string;
   variableCount: number;
   modes: string[];
@@ -112,8 +135,11 @@ export interface ComponentSourceRow {
   name: string;
   fileName: string;
   tokenKey: string;
+  nodeId: string;
   remote: boolean;
   tokenCount: number;
+  propCount: number;
+  description?: string;
 }
 
 export interface ExportContext {
@@ -127,6 +153,7 @@ export interface ExportContext {
   styleSources: StyleSourceInfo[];
   tokenDocs: TokenDocumentation[];
   componentSources: ComponentSourceRow[];
+  componentCatalog: CapturedComponent[];
   sessionFileCount: number;
   includeStyles: boolean;
   includeDtcg: boolean;
@@ -166,6 +193,7 @@ export interface GenerateOptions {
   includeStyles: boolean;
   includeDtcg: boolean;
   includeSessionComponents: boolean;
+  collectionIds?: string[];
   sessionFileKeys?: string[];
   modeName?: string;
   modeId?: string;

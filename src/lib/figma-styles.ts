@@ -84,6 +84,75 @@ function variableRefFromAlias(
   return `{${slugifyTokenKey(variable.name)}}`;
 }
 
+function gradientAngleDegrees(transform: Transform): number {
+  // Figma maps gradient space → layer space; default linear runs left → right.
+  const [[a], [b]] = transform;
+  const degrees = (Math.atan2(b, a) * 180) / Math.PI + 90;
+  return Math.round(((degrees % 360) + 360) % 360);
+}
+
+function paintToCssValue(paint: Paint): string | undefined {
+  if (paint.visible === false) return undefined;
+
+  if (paint.type === "SOLID") {
+    return rgbaToHex(paint.color);
+  }
+
+  if (
+    paint.type === "GRADIENT_LINEAR" ||
+    paint.type === "GRADIENT_RADIAL" ||
+    paint.type === "GRADIENT_ANGULAR" ||
+    paint.type === "GRADIENT_DIAMOND"
+  ) {
+    const stops = paint.gradientStops
+      .map((stop) => {
+        const position = Math.round(stop.position * 1000) / 10;
+        return `${rgbaToHex(stop.color)} ${position}%`;
+      })
+      .join(", ");
+
+    if (paint.type === "GRADIENT_LINEAR") {
+      return `linear-gradient(${gradientAngleDegrees(paint.gradientTransform)}deg, ${stops})`;
+    }
+
+    if (paint.type === "GRADIENT_ANGULAR") {
+      return `conic-gradient(from ${gradientAngleDegrees(paint.gradientTransform)}deg, ${stops})`;
+    }
+
+    // Radial + diamond — CSS has no diamond, approximate as radial.
+    return `radial-gradient(circle, ${stops})`;
+  }
+
+  return undefined;
+}
+
+function effectToShadowToken(effect: Effect): ShadowToken | undefined {
+  if (effect.visible === false) return undefined;
+
+  if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
+    return {
+      color: rgbaToHex(effect.color),
+      offsetX: floatToDimension(effect.offset.x),
+      offsetY: floatToDimension(effect.offset.y),
+      blur: floatToDimension(effect.radius),
+      spread: floatToDimension(effect.spread ?? 0),
+      ...(effect.type === "INNER_SHADOW" ? { inset: true } : {}),
+    };
+  }
+
+  if (effect.type === "LAYER_BLUR" || effect.type === "BACKGROUND_BLUR") {
+    return {
+      color: "#00000000",
+      offsetX: "0px",
+      offsetY: "0px",
+      blur: floatToDimension(effect.radius),
+      spread: "0px",
+    };
+  }
+
+  return undefined;
+}
+
 export async function extractFigmaStyles(
   options: GenerateOptions,
   variableById: Map<string, Variable>
@@ -163,15 +232,17 @@ export async function extractFigmaStyles(
   }
 
   for (const style of paintStyles) {
-    const solid = style.paints.find((paint) => paint.type === "SOLID" && paint.visible !== false);
+    const paint =
+      style.paints.find((item) => item.visible !== false && paintToCssValue(item)) ??
+      style.paints.find((item) => item.visible !== false);
 
-    if (!solid || solid.type !== "SOLID") {
-      warnings.push(`Paint style "${style.name}" has no solid fill — skipped.`);
+    const color = paint ? paintToCssValue(paint) : undefined;
+    if (!color) {
+      warnings.push(`Paint style "${style.name}" has no exportable fill — skipped.`);
       continue;
     }
 
     const tokenKey = styleTokenKey(style.name, "paint-style");
-    const color = rgbaToHex(solid.color);
     colors[tokenKey] = color;
 
     styleSources.push({
@@ -194,24 +265,23 @@ export async function extractFigmaStyles(
   }
 
   for (const style of effectStyles) {
-    const dropShadow = style.effects.find(
-      (effect) => effect.type === "DROP_SHADOW" && effect.visible !== false
-    );
+    const effect =
+      style.effects.find(
+        (item) =>
+          item.visible !== false &&
+          (item.type === "DROP_SHADOW" ||
+            item.type === "INNER_SHADOW" ||
+            item.type === "LAYER_BLUR" ||
+            item.type === "BACKGROUND_BLUR")
+      ) ?? style.effects.find((item) => item.visible !== false);
 
-    if (!dropShadow || dropShadow.type !== "DROP_SHADOW") {
-      warnings.push(`Effect style "${style.name}" has no drop shadow — skipped.`);
+    const shadow = effect ? effectToShadowToken(effect) : undefined;
+    if (!shadow) {
+      warnings.push(`Effect style "${style.name}" has no exportable effect — skipped.`);
       continue;
     }
 
     const tokenKey = styleTokenKey(style.name, "effect-style");
-    const shadow: ShadowToken = {
-      color: rgbaToHex(dropShadow.color),
-      offsetX: floatToDimension(dropShadow.offset.x),
-      offsetY: floatToDimension(dropShadow.offset.y),
-      blur: floatToDimension(dropShadow.radius),
-      spread: floatToDimension(dropShadow.spread ?? 0),
-    };
-
     shadows[tokenKey] = shadow;
     styleSources.push({
       kind: "effect",

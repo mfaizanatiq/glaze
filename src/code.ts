@@ -23,6 +23,7 @@ type UiMessage =
       includeStyles: boolean;
       includeDtcg: boolean;
       includeSessionComponents: boolean;
+      collectionIds?: string[];
       modeName?: string;
     }
   | { type: "get-session" }
@@ -35,6 +36,7 @@ type PluginMessage =
       type: "init-result";
       fileName: string;
       collections: {
+        id: string;
         name: string;
         variableCount: number;
         modes: string[];
@@ -182,6 +184,7 @@ figma.ui.onmessage = async (msg: UiMessage) => {
         includeStyles: msg.includeStyles,
         includeDtcg: msg.includeDtcg,
         includeSessionComponents: msg.includeSessionComponents,
+        collectionIds: msg.collectionIds,
         modeName: msg.modeName || undefined,
       });
 

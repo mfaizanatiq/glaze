@@ -99,23 +99,6 @@ function buildModeMap(
   };
 }
 
-function createResolverFrame(modeByCollection: Map<string, string>): FrameNode {
-  const frame = figma.createFrame();
-  frame.name = "__design_md_resolver__";
-  frame.visible = false;
-  frame.resize(1, 1);
-  frame.locked = true;
-
-  for (const [collectionId, modeId] of modeByCollection) {
-    const collection = figma.variables.getVariableCollectionById(collectionId);
-    if (collection) {
-      frame.setExplicitVariableModeForCollection(collection, modeId);
-    }
-  }
-
-  return frame;
-}
-
 function convertResolvedValue(resolved: {
   value: VariableValue;
   resolvedType: VariableResolvedDataType;
@@ -143,21 +126,33 @@ function convertResolvedValue(resolved: {
 
 function resolveVariable(
   variable: Variable,
-  collection: CollectionInfo,
   modeId: string,
   variableById: Map<string, Variable>,
-  collectionById: Map<string, CollectionInfo>,
-  keyRegistry: Map<string, string>,
-  resolverFrame: FrameNode,
-  aliasCount: { value: number }
+  allCollectionById: Map<string, CollectionInfo>,
+  exportedCollectionIds: Set<string>,
+  modeByCollection: Map<string, string>,
+  keyRegistry: Map<string, string>
 ): { value: string | number | undefined; isAlias: boolean } {
   const rawValue = variable.valuesByMode[modeId];
 
   if (isVariableAlias(rawValue)) {
-    aliasCount.value += 1;
     const target = variableById.get(rawValue.id);
     if (target) {
-      const targetCollection = collectionById.get(target.variableCollectionId);
+      const targetCollection = allCollectionById.get(target.variableCollectionId);
+
+      // Keep references only when their target collection is part of the export.
+      // Otherwise inline the resolved primitive so collection filtering never
+      // creates dangling DESIGN.md token references.
+      if (!exportedCollectionIds.has(target.variableCollectionId)) {
+        const inlined = resolveVariableLiteral(
+          target,
+          variableById,
+          modeByCollection,
+          new Set([variable.id])
+        );
+        return { value: inlined, isAlias: false };
+      }
+
       const targetCategory = inferCategory(
         targetCollection?.name ?? "",
         target.name,
@@ -171,27 +166,45 @@ function resolveVariable(
     }
   }
 
-  try {
-    const consumerValue = variable.resolveForConsumer(resolverFrame);
-    const value = convertResolvedValue(consumerValue);
-    if (value !== undefined) {
-      return { value, isAlias: false };
-    }
-  } catch {
-    // fall through
-  }
-
   if (rawValue !== undefined && !isVariableAlias(rawValue)) {
-    const fallback = convertResolvedValue({
+    const value = convertResolvedValue({
       value: rawValue,
       resolvedType: variable.resolvedType,
     });
-    if (fallback !== undefined) {
-      return { value: fallback, isAlias: false };
+    if (value !== undefined) {
+      return { value, isAlias: false };
     }
   }
 
   return { value: undefined, isAlias: false };
+}
+
+function resolveVariableLiteral(
+  variable: Variable,
+  variableById: Map<string, Variable>,
+  modeByCollection: Map<string, string>,
+  visited: Set<string>
+): string | number | undefined {
+  if (visited.has(variable.id)) return undefined;
+  visited.add(variable.id);
+
+  const modeId = modeByCollection.get(variable.variableCollectionId);
+  if (!modeId) return undefined;
+  const rawValue = variable.valuesByMode[modeId];
+
+  if (isVariableAlias(rawValue)) {
+    const target = variableById.get(rawValue.id);
+    return target
+      ? resolveVariableLiteral(target, variableById, modeByCollection, visited)
+      : undefined;
+  }
+
+  return rawValue === undefined
+    ? undefined
+    : convertResolvedValue({
+        value: rawValue,
+        resolvedType: variable.resolvedType,
+      });
 }
 
 export async function extractDesignTokens(
@@ -203,11 +216,21 @@ export async function extractDesignTokens(
   context: ExportContext;
 }> {
   const warnings: string[] = [];
-  const collections = await figma.variables.getLocalVariableCollectionsAsync();
-  const variables = await figma.variables.getLocalVariablesAsync();
+  const allCollections = await figma.variables.getLocalVariableCollectionsAsync();
+  const allVariables = await figma.variables.getLocalVariablesAsync();
+  const selectedIds =
+    options.collectionIds && options.collectionIds.length > 0
+      ? new Set(options.collectionIds)
+      : undefined;
+  const collections = selectedIds
+    ? allCollections.filter((collection) => selectedIds.has(collection.id))
+    : allCollections;
+  const variables = selectedIds
+    ? allVariables.filter((variable) => selectedIds.has(variable.variableCollectionId))
+    : allVariables;
 
-  const collectionById = new Map<string, CollectionInfo>(
-    collections.map((collection) => [
+  const allCollectionById = new Map<string, CollectionInfo>(
+    allCollections.map((collection) => [
       collection.id,
       {
         id: collection.id,
@@ -220,14 +243,18 @@ export async function extractDesignTokens(
       },
     ])
   );
+  const collectionById = new Map(
+    [...allCollectionById].filter(([collectionId]) =>
+      collections.some((collection) => collection.id === collectionId)
+    )
+  );
 
-  const variableById = new Map(variables.map((variable) => [variable.id, variable]));
+  const variableById = new Map(allVariables.map((variable) => [variable.id, variable]));
   const { modeByCollection, strategy, activeModeName } = buildModeMap(
-    [...collectionById.values()],
+    [...allCollectionById.values()],
     options
   );
-  const resolverFrame = createResolverFrame(modeByCollection);
-  const aliasCount = { value: 0 };
+  const exportedCollectionIds = new Set(collectionById.keys());
   const tokenDocs: TokenDocumentation[] = [];
 
   const tokens: DesignTokens = {
@@ -294,13 +321,12 @@ export async function extractDesignTokens(
 
     const { value: resolved, isAlias } = resolveVariable(
       variable,
-      collection,
       modeId,
       variableById,
-      collectionById,
-      keyRegistry,
-      resolverFrame,
-      aliasCount
+      allCollectionById,
+      exportedCollectionIds,
+      modeByCollection,
+      keyRegistry
     );
 
     if (resolved === undefined) {
@@ -322,16 +348,11 @@ export async function extractDesignTokens(
     });
   }
 
-  resolverFrame.remove();
-
-  if (aliasCount.value > 0) {
-    warnings.unshift(`Mapped ${aliasCount.value} alias variable(s) to token references.`);
-  }
-
   const exportCollections: CollectionExportInfo[] = [...collectionById.values()].map(
     (collection) => {
       const activeModeId = modeByCollection.get(collection.id) ?? collection.defaultModeId;
       return {
+        id: collection.id,
         name: collection.name,
         variableCount: collectionCounts.get(collection.name) ?? 0,
         modes: collection.modes.map((mode) => mode.name),
@@ -353,6 +374,7 @@ export async function extractDesignTokens(
     styleSources: [],
     tokenDocs: tokenDocs.sort((a, b) => a.tokenKey.localeCompare(b.tokenKey)),
     componentSources: [],
+    componentCatalog: [],
     sessionFileCount: 0,
     includeStyles: false,
     includeDtcg: false,
@@ -385,8 +407,8 @@ function applyToken(
       break;
 
     case "typography": {
-      const field = typographyFieldFromName(variableName);
-      if (!field) {
+      const mapped = typographyFieldFromName(variableName);
+      if (!mapped) {
         tokens.other[tokenKey] = value;
         warnings.push(
           `Typography variable "${variableName}" could not be mapped to a typography field.`
@@ -394,10 +416,13 @@ function applyToken(
         break;
       }
 
-      const styleKey = buildTokenKey(
-        variableName.split("/").slice(0, -1).join("/") || tokenKey,
-        "typography"
-      );
+      const { field, useFullPath } = mapped;
+      const styleKey = useFullPath
+        ? tokenKey
+        : buildTokenKey(
+            variableName.split("/").slice(0, -1).join("/") || tokenKey,
+            "typography"
+          );
 
       if (!tokens.typography[styleKey]) {
         tokens.typography[styleKey] = {};
@@ -473,6 +498,7 @@ export async function getExportPreview(): Promise<{
   }
 
   const collectionInfos: CollectionExportInfo[] = collections.map((collection) => ({
+    id: collection.id,
     name: collection.name,
     variableCount: counts.get(collection.name) ?? 0,
     modes: collection.modes.map((mode) => mode.name),

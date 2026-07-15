@@ -8,6 +8,7 @@ import {
 import { extractFigmaStyles, mergeStyleTokens } from "./figma-styles";
 import { getSessionComponents, loadSession } from "./session-cache";
 import type {
+  CapturedComponent,
   ComponentSourceRow,
   DesignTokens,
   ExportContext,
@@ -43,11 +44,13 @@ export async function generateDesignMd(
   mergeStyleTokens(tokens, styleResult);
 
   let componentSources: ComponentSourceRow[] = [];
+  let componentCatalog: CapturedComponent[] = [];
   if (options.includeSessionComponents) {
     const sessionEntries = await getSessionComponents(options.sessionFileKeys);
     const allSessionComponents = sessionEntries.flatMap((item) => item.components);
     mergeSessionComponentsIntoTokens(tokens, allSessionComponents);
     componentSources = componentSourceRows(sessionEntries);
+    componentCatalog = allSessionComponents;
     if (allSessionComponents.length === 0) {
       warnings.push("Session cache is empty — capture components from library files first.");
     }
@@ -62,6 +65,7 @@ export async function generateDesignMd(
   context.styles = styleResult.counts;
   context.styleSources = styleResult.styleSources;
   context.componentSources = componentSources;
+  context.componentCatalog = componentCatalog;
   context.sessionFileCount = Object.keys(sessionCache.files).length;
   context.tokenDocs = [...context.tokenDocs, ...styleResult.tokenDocs].sort((a, b) =>
     a.tokenKey.localeCompare(b.tokenKey)
@@ -75,12 +79,15 @@ export async function generateDesignMd(
     : renderMinimalProse(tokens, context);
 
   let markdown = `${yaml}\n\n${body}\n`;
-  let tokensJson: string | undefined;
+  const dtcgJson = options.includeDtcg
+    ? exportDtcgTokens(tokens, context.tokenDocs)
+    : undefined;
 
-  if (options.includeDtcg) {
-    tokensJson = exportDtcgTokens(tokens, context.tokenDocs);
-    markdown += renderDtcgAppendix(tokensJson, context);
+  if (dtcgJson) {
+    markdown += renderDtcgAppendix(dtcgJson, context);
   }
+
+  const tokensJson = exportAiPackage(tokens, context, dtcgJson);
 
   return {
     markdown,
@@ -246,6 +253,75 @@ function renderDtcgAppendix(tokensJson: string, context: ExportContext): string 
     "```",
     "",
   ].join("\n");
+}
+
+function exportAiPackage(
+  tokens: DesignTokens,
+  context: ExportContext,
+  dtcgJson?: string
+): string {
+  let dtcg: unknown;
+  if (dtcgJson) {
+    try {
+      dtcg = JSON.parse(dtcgJson);
+    } catch {
+      dtcg = undefined;
+    }
+  }
+
+  const packageDocument = {
+    format: "glaze-design-package",
+    aiReady: true,
+    spec: "design.md",
+    specVersion: context.specVersion,
+    name: tokens.name,
+    description: tokens.description,
+    exportedAt: context.exportedAt,
+    source: {
+      figmaFileName: context.figmaFileName,
+      modeStrategy: context.modeStrategy,
+      activeModeName: context.activeModeName,
+      collections: context.collections,
+      styles: context.styles,
+    },
+    usage: {
+      placeDesignMdAt: "DESIGN.md",
+      placeAlongside: ["AGENTS.md", "README.md"],
+      agentInstruction:
+        "Before generating or modifying UI, read and follow DESIGN.md for colors, typography, spacing, and components.",
+      validate: "npx @google/design.md lint DESIGN.md",
+    },
+    tokens: {
+      version: tokens.version,
+      colors: tokens.colors,
+      typography: tokens.typography,
+      spacing: tokens.spacing,
+      rounded: tokens.rounded,
+      shadows: tokens.shadows,
+      components: tokens.components,
+      other: tokens.other,
+    },
+    components: context.componentCatalog.map((component) => ({
+      name: component.name,
+      tokenKey: component.tokenKey,
+      nodeId: component.nodeId,
+      componentSetNodeId: component.componentSetNodeId,
+      figmaKey: component.figmaKey,
+      componentSetKey: component.componentSetKey,
+      figmaUrl: component.figmaUrl,
+      remote: component.remote,
+      description: component.description,
+      documentationLinks: component.documentationLinks,
+      codeConnectLinks: component.codeConnectLinks,
+      devResources: component.devResources,
+      variantProperties: component.variantProperties,
+      propertyDefinitions: component.propertyDefinitions,
+      tokens: component.tokens,
+    })),
+    ...(dtcg ? { dtcg } : {}),
+  };
+
+  return `${JSON.stringify(packageDocument, null, 2)}\n`;
 }
 
 function renderMinimalProse(tokens: DesignTokens, context: ExportContext): string {
@@ -501,6 +577,85 @@ function describeShapes(tokens: DesignTokens, context: ExportContext): string {
 function describeComponents(tokens: DesignTokens, context: ExportContext): string {
   const lines = ["## Components", ""];
 
+  if (context.componentCatalog.length > 0) {
+    lines.push(
+      "Published component collection from session capture. Includes node IDs, property definitions, defaults, and style bindings for agent-ready lookup."
+    );
+    lines.push("");
+
+    for (const component of context.componentCatalog) {
+      lines.push(`### ${component.name}`);
+      lines.push("");
+      if (component.description) {
+        lines.push(component.description);
+        lines.push("");
+      }
+      lines.push(`- **Token key:** \`${component.tokenKey}\``);
+      lines.push(`- **Node ID:** \`${component.nodeId}\``);
+      if (component.componentSetNodeId) {
+        lines.push(`- **Component set node ID:** \`${component.componentSetNodeId}\``);
+      }
+      lines.push(`- **Figma key:** \`${component.figmaKey}\``);
+      if (component.figmaUrl) {
+        lines.push(`- **Figma:** ${component.figmaUrl}`);
+      }
+      if (component.codeConnectLinks && component.codeConnectLinks.length > 0) {
+        lines.push("- **Code Connect:**");
+        for (const link of component.codeConnectLinks) {
+          lines.push(`  - [${link.name}](${link.url})`);
+        }
+      }
+      if (component.documentationLinks && component.documentationLinks.length > 0) {
+        lines.push("- **Documentation:**");
+        for (const url of component.documentationLinks) {
+          lines.push(`  - ${url}`);
+        }
+      }
+      if (component.devResources && component.devResources.length > 0) {
+        lines.push("- **Dev resources:**");
+        for (const link of component.devResources) {
+          lines.push(`  - [${link.name}](${link.url})`);
+        }
+      }
+
+      if (component.variantProperties && Object.keys(component.variantProperties).length > 0) {
+        lines.push("- **Default variant:**");
+        for (const [key, value] of Object.entries(component.variantProperties)) {
+          lines.push(`  - ${key}: ${value}`);
+        }
+      }
+
+      if (component.propertyDefinitions && component.propertyDefinitions.length > 0) {
+        lines.push("- **Properties:**");
+        for (const prop of component.propertyDefinitions) {
+          const parts = [`\`${prop.name}\``, prop.type];
+          if (prop.defaultValue !== undefined) {
+            parts.push(`default ${JSON.stringify(prop.defaultValue)}`);
+          }
+          if (prop.options && prop.options.length > 0) {
+            parts.push(`options: ${prop.options.join(" | ")}`);
+          }
+          if (prop.description) {
+            parts.push(prop.description);
+          }
+          lines.push(`  - ${parts.join(" · ")}`);
+        }
+      }
+
+      const tokenEntries = Object.entries(component.tokens);
+      if (tokenEntries.length > 0) {
+        lines.push("- **Style bindings:**");
+        for (const [prop, value] of tokenEntries) {
+          lines.push(`  - **${prop}**: ${value}`);
+        }
+      }
+
+      lines.push("");
+    }
+
+    return lines.join("\n").trimEnd();
+  }
+
   const entries = Object.entries(tokens.components);
   if (entries.length === 0) {
     lines.push("_No component tokens found._");
@@ -523,15 +678,15 @@ function describeSessionComponents(context: ExportContext): string {
   const lines = [
     "## Component sourcing",
     "",
-    "Lookup tables captured from library files in your session cache. Token references point to values in the **current file** export.",
+    "Lookup tables captured from library files in your session cache. Includes definitions, props, node IDs, and style bindings. Token references point to values in the **current file** export.",
     "",
-    "| Component | Source file | Token key | Bindings |",
-    "|---|---|---|---|",
+    "| Component | Source file | Node ID | Props | Bindings |",
+    "|---|---|---|---|---|",
   ];
 
   for (const row of context.componentSources) {
     lines.push(
-      `| ${row.name} | ${row.fileName} | \`${row.tokenKey}\` | ${row.tokenCount} |`
+      `| ${row.name} | ${row.fileName} | \`${row.nodeId}\` | ${row.propCount} | ${row.tokenCount} |`
     );
   }
 

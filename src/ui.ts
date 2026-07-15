@@ -1,4 +1,5 @@
 type CollectionInfo = {
+  id: string;
   name: string;
   variableCount: number;
   modes: string[];
@@ -79,6 +80,15 @@ const exportBtn = document.getElementById("exportBtn") as HTMLButtonElement;
 const captureBtn = document.getElementById("captureBtn") as HTMLButtonElement;
 const copyBtn = document.getElementById("copyBtn") as HTMLButtonElement;
 const copyTokensBtn = document.getElementById("copyTokensBtn") as HTMLButtonElement;
+const downloadBtn = document.getElementById("downloadBtn") as HTMLButtonElement;
+const exportMenuBtn = document.getElementById("exportMenuBtn") as HTMLButtonElement;
+const exportPopover = document.getElementById("exportPopover") as HTMLDivElement;
+const menuDownloadMd = document.getElementById("menuDownloadMd") as HTMLButtonElement;
+const menuDownloadJson = document.getElementById("menuDownloadJson") as HTMLButtonElement;
+const packageStatusTitle = document.getElementById("packageStatusTitle") as HTMLElement;
+const packageStatusDetail = document.getElementById("packageStatusDetail") as HTMLElement;
+const signalsSummary = document.getElementById("signalsSummary") as HTMLElement;
+const actionFeedback = document.getElementById("actionFeedback") as HTMLDivElement;
 const setupView = document.getElementById("setupView") as HTMLElement;
 const sessionView = document.getElementById("sessionView") as HTMLElement;
 const resultView = document.getElementById("resultView") as HTMLElement;
@@ -107,9 +117,14 @@ const captureProgressDetail = document.getElementById("captureProgressDetail") a
 
 let latestMarkdown = "";
 let latestTokensJson = "";
+let latestPackageName = "design-system";
 let collectionsOpen = false;
+let availableCollections: CollectionInfo[] = [];
+let selectedCollectionIds = new Set<string>();
 let activeTab: "export" | "session" = "export";
 let sessionData: SessionInfo[] = [];
+let menuOpen = false;
+let feedbackTimer = 0;
 
 parent.postMessage({ pluginMessage: { type: "init" } }, "*");
 
@@ -192,19 +207,90 @@ function renderSummaryFromSession(session: SessionInfo[], sessionComponentCount:
 }
 
 function renderCollections(collections: CollectionInfo[]): void {
+  availableCollections = collections;
+  selectedCollectionIds = new Set(collections.map((collection) => collection.id));
+
   if (collections.length === 0) {
     collectionsSummary.textContent = "No variable collections";
     collectionsToggle.disabled = true;
     return;
   }
 
-  collectionsSummary.textContent = `${collections.length} collections`;
-  collectionsList.innerHTML = collections
-    .map(
+  renderCollectionOptions();
+}
+
+function renderCollectionOptions(): void {
+  const selectedCount = selectedCollectionIds.size;
+  const totalCount = availableCollections.length;
+  const allSelected = selectedCount === totalCount;
+
+  collectionsSummary.textContent = allSelected
+    ? `All collections (${totalCount})`
+    : selectedCount === 0
+      ? "Select collections"
+      : `${selectedCount} of ${totalCount} collections`;
+
+  collectionsList.innerHTML = [
+    `<li class="collection-all">
+      <label class="collection-option">
+        <input type="checkbox" data-collection-all ${allSelected ? "checked" : ""} />
+        <span>Select all</span>
+        <span class="collection-meta">${totalCount}</span>
+      </label>
+    </li>`,
+    ...availableCollections.map(
       (collection) =>
-        `<li><span>${escapeHtml(collection.name)}</span><span>${collection.variableCount} · ${escapeHtml(collection.activeMode)}</span></li>`
-    )
-    .join("");
+        `<li>
+          <label class="collection-option">
+            <input
+              type="checkbox"
+              data-collection-id="${escapeHtml(collection.id)}"
+              ${selectedCollectionIds.has(collection.id) ? "checked" : ""}
+            />
+            <span>${escapeHtml(collection.name)}</span>
+            <span class="collection-meta">${collection.variableCount} · ${escapeHtml(collection.activeMode)}</span>
+          </label>
+        </li>`
+    ),
+  ].join("");
+
+  const selectAll = collectionsList.querySelector<HTMLInputElement>("[data-collection-all]");
+  if (selectAll) {
+    selectAll.indeterminate = selectedCount > 0 && !allSelected;
+    selectAll.addEventListener("change", () => {
+      selectedCollectionIds = selectAll.checked
+        ? new Set(availableCollections.map((collection) => collection.id))
+        : new Set();
+      renderCollectionOptions();
+      updateCollectionSelectionState();
+    });
+  }
+
+  collectionsList.querySelectorAll<HTMLInputElement>("[data-collection-id]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const collectionId = input.dataset.collectionId;
+      if (!collectionId) return;
+      if (input.checked) selectedCollectionIds.add(collectionId);
+      else selectedCollectionIds.delete(collectionId);
+      renderCollectionOptions();
+      updateCollectionSelectionState();
+    });
+  });
+}
+
+function updateCollectionSelectionState(): void {
+  const selectedVariables = availableCollections
+    .filter((collection) => selectedCollectionIds.has(collection.id))
+    .reduce((sum, collection) => sum + collection.variableCount, 0);
+  varCountEl.textContent = String(selectedVariables);
+  exportBtn.disabled = selectedCollectionIds.size === 0;
+
+  const scope = selectedCollectionIds.size === availableCollections.length
+    ? "every collection"
+    : `${selectedCollectionIds.size} selected collection${selectedCollectionIds.size === 1 ? "" : "s"}`;
+  modeHint.textContent = modeSelect.value
+    ? `Uses "${modeSelect.value}" across ${scope}, falling back to each default.`
+    : `Uses the default mode for ${scope}.`;
 }
 
 function renderSession(session: SessionInfo[], componentCount: number): void {
@@ -308,15 +394,14 @@ function populateModes(modeNames: string[]): void {
   }
 
   modeSelect.addEventListener("change", () => {
-    modeHint.textContent = modeSelect.value
-      ? `Uses "${modeSelect.value}" where available, otherwise each collection's default.`
-      : "Syncs every collection using its own default mode.";
+    updateCollectionSelectionState();
   });
 }
 
 collectionsToggle.addEventListener("click", () => {
   collectionsOpen = !collectionsOpen;
   collectionsList.classList.toggle("open", collectionsOpen);
+  collectionsToggle.setAttribute("aria-expanded", String(collectionsOpen));
   collectionsToggle.querySelector("span:last-child")!.textContent = collectionsOpen ? "▴" : "▾";
 });
 
@@ -343,9 +428,30 @@ function showResultView(msg: Extract<PluginMessage, { type: "export-result" }>):
   sessionView.classList.remove("active");
   resultView.classList.add("active");
   footer.classList.add("hidden");
+  closeExportMenu();
 
-  preview.textContent = msg.markdown;
-  previewMeta.textContent = `${formatBytes(msg.markdown.length)} · ${countLines(msg.markdown)} lines`;
+  const fullLineCount = countLines(msg.markdown);
+  const previewLineCount = 80;
+  const previewLines = msg.markdown.split("\n").slice(0, previewLineCount);
+  preview.textContent =
+    previewLines.join("\n") +
+    (fullLineCount > previewLineCount
+      ? `\n\n… ${fullLineCount - previewLineCount} more lines in the downloaded file`
+      : "");
+  previewMeta.textContent = `${formatBytes(msg.markdown.length)} · Preview`;
+
+  latestPackageName = slugifyFilename(nameInput.value.trim() || fileNameEl.textContent || "design-system");
+
+  const signalCount = Object.values(msg.stats).reduce(
+    (sum, value) => sum + (typeof value === "number" ? value : 0),
+    0
+  );
+  packageStatusTitle.textContent = "Export complete";
+  packageStatusDetail.textContent = latestTokensJson
+    ? `DESIGN.md · ${formatBytes(msg.markdown.length)} · JSON catalog included`
+    : `DESIGN.md · ${formatBytes(msg.markdown.length)}`;
+  signalsSummary.textContent = `${signalCount} design signals`;
+  setActionFeedback("Choose Download, or use the menu for JSON and copy options");
 
   statsEl.innerHTML = [
     chip("Colors", msg.stats.colors),
@@ -359,15 +465,12 @@ function showResultView(msg: Extract<PluginMessage, { type: "export-result" }>):
     .filter(Boolean)
     .join("");
 
-  if (latestTokensJson) {
-    copyTokensBtn.classList.remove("hidden");
-    copyTokensBtn.disabled = false;
-  } else {
-    copyTokensBtn.classList.add("hidden");
-    copyTokensBtn.disabled = true;
-  }
-
-  copyBtn.disabled = false;
+  downloadBtn.disabled = !latestMarkdown;
+  exportMenuBtn.disabled = !latestMarkdown;
+  copyBtn.disabled = !latestMarkdown;
+  copyTokensBtn.disabled = !latestTokensJson;
+  menuDownloadMd.disabled = !latestMarkdown;
+  menuDownloadJson.disabled = !latestTokensJson;
 
   if (msg.warnings.length > 0) {
     warningsEl.classList.remove("hidden");
@@ -395,7 +498,7 @@ function showSetupView(): void {
 }
 
 function setLoading(loading: boolean): void {
-  exportBtn.disabled = loading;
+  exportBtn.disabled = loading || selectedCollectionIds.size === 0;
   exportBtn.classList.toggle("loading", loading);
   exportBtn.textContent = loading ? "Generating…" : "Generate DESIGN.md";
 }
@@ -408,7 +511,7 @@ function setCaptureLoading(loading: boolean): void {
 
 function chip(label: string, value: number): string {
   if (value === 0) return "";
-  return `<span class="chip"><b>${value}</b> ${label}</span>`;
+  return `<span class="chip"><span>${label}</span><b>${value}</b></span>`;
 }
 
 function formatBytes(length: number): string {
@@ -431,8 +534,11 @@ function escapeHtml(value: string): string {
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   setLoading(true);
+  downloadBtn.disabled = true;
+  exportMenuBtn.disabled = true;
   copyBtn.disabled = true;
   copyTokensBtn.disabled = true;
+  setActionFeedback("Generating package…");
 
   parent.postMessage(
     {
@@ -444,6 +550,7 @@ form.addEventListener("submit", (event) => {
         includeStyles: includeStylesInput.checked,
         includeDtcg: includeDtcgInput.checked,
         includeSessionComponents: includeSessionInput.checked,
+        collectionIds: [...selectedCollectionIds],
         modeName: modeSelect.value || undefined,
       },
     },
@@ -471,7 +578,10 @@ clearSessionBtn.addEventListener("click", () => {
   parent.postMessage({ pluginMessage: { type: "clear-session" } }, "*");
 });
 
-backBtn.addEventListener("click", showSetupView);
+backBtn.addEventListener("click", () => {
+  closeExportMenu();
+  showSetupView();
+});
 
 helpBtn.addEventListener("click", () => helpSheet.classList.add("open"));
 closeHelpBtn.addEventListener("click", () => helpSheet.classList.remove("open"));
@@ -479,22 +589,124 @@ helpSheet.addEventListener("click", (event) => {
   if (event.target === helpSheet) helpSheet.classList.remove("open");
 });
 
+function setActionFeedback(message: string, tone: "neutral" | "success" | "error" = "neutral"): void {
+  actionFeedback.textContent = message;
+  actionFeedback.classList.toggle("success", tone === "success");
+  actionFeedback.classList.toggle("error", tone === "error");
+  window.clearTimeout(feedbackTimer);
+  if (tone !== "neutral") {
+    feedbackTimer = window.setTimeout(() => {
+      actionFeedback.classList.remove("success", "error");
+    }, 2200);
+  }
+}
+
+function openExportMenu(): void {
+  menuOpen = true;
+  exportPopover.classList.add("open");
+  exportMenuBtn.setAttribute("aria-expanded", "true");
+}
+
+function closeExportMenu(): void {
+  menuOpen = false;
+  exportPopover.classList.remove("open");
+  exportMenuBtn.setAttribute("aria-expanded", "false");
+}
+
+function toggleExportMenu(): void {
+  if (menuOpen) closeExportMenu();
+  else openExportMenu();
+}
+
+function slugifyFilename(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "design-system";
+}
+
+function downloadText(filename: string, content: string, mime: string): void {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+async function copyText(content: string, successLabel: string): Promise<void> {
+  await navigator.clipboard.writeText(content);
+  setActionFeedback(successLabel, "success");
+}
+
+function downloadDesignMd(): void {
+  if (!latestMarkdown) return;
+  setActionFeedback("Downloading DESIGN.md…");
+  downloadText("DESIGN.md", latestMarkdown, "text/markdown;charset=utf-8");
+  setActionFeedback("Downloaded DESIGN.md", "success");
+  closeExportMenu();
+}
+
+function downloadPackageJson(): void {
+  if (!latestTokensJson) {
+    setActionFeedback("JSON package unavailable", "error");
+    return;
+  }
+  setActionFeedback("Downloading JSON package…");
+  downloadText(
+    `${latestPackageName}.design-package.json`,
+    latestTokensJson,
+    "application/json;charset=utf-8"
+  );
+  setActionFeedback("Downloaded JSON package", "success");
+  closeExportMenu();
+}
+
+downloadBtn.addEventListener("click", downloadDesignMd);
+exportMenuBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleExportMenu();
+});
+menuDownloadMd.addEventListener("click", downloadDesignMd);
+menuDownloadJson.addEventListener("click", downloadPackageJson);
+
 copyBtn.addEventListener("click", async () => {
   if (!latestMarkdown) return;
-  await navigator.clipboard.writeText(latestMarkdown);
-  flashButton(copyBtn, "Copied");
+  try {
+    await copyText(latestMarkdown, "Copied DESIGN.md");
+  } catch {
+    setActionFeedback("Copy failed", "error");
+  }
+  closeExportMenu();
 });
 
 copyTokensBtn.addEventListener("click", async () => {
   if (!latestTokensJson) return;
-  await navigator.clipboard.writeText(latestTokensJson);
-  flashButton(copyTokensBtn, "Copied");
+  try {
+    await copyText(latestTokensJson, "Copied JSON package");
+  } catch {
+    setActionFeedback("Copy failed", "error");
+  }
+  closeExportMenu();
 });
 
-function flashButton(button: HTMLButtonElement, label: string): void {
-  const original = button.textContent;
-  button.textContent = label;
-  setTimeout(() => {
-    button.textContent = original;
-  }, 1400);
-}
+document.addEventListener("click", (event) => {
+  const target = event.target as Node;
+
+  if (menuOpen && !exportPopover.contains(target) && target !== exportMenuBtn) {
+    closeExportMenu();
+  }
+
+  if (
+    collectionsOpen &&
+    !collectionsList.contains(target) &&
+    !collectionsToggle.contains(target)
+  ) {
+    collectionsOpen = false;
+    collectionsList.classList.remove("open");
+    collectionsToggle.setAttribute("aria-expanded", "false");
+    collectionsToggle.querySelector("span:last-child")!.textContent = "▾";
+  }
+});

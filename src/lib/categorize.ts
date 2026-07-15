@@ -10,6 +10,7 @@ const COMPONENT_HINTS = ["component", "button", "input", "card", "chip", "badge"
 const TYPO_FIELDS = new Set([
   "fontfamily",
   "font-family",
+  "family",
   "fontsize",
   "font-size",
   "fontweight",
@@ -23,6 +24,26 @@ const TYPO_FIELDS = new Set([
   "fontvariation",
   "font-variation",
 ]);
+
+const TYPO_FIELD_MAP: Record<string, string> = {
+  fontfamily: "fontFamily",
+  "font-family": "fontFamily",
+  family: "fontFamily",
+  fontsize: "fontSize",
+  "font-size": "fontSize",
+  size: "fontSize",
+  fontweight: "fontWeight",
+  "font-weight": "fontWeight",
+  weight: "fontWeight",
+  lineheight: "lineHeight",
+  "line-height": "lineHeight",
+  letterspacing: "letterSpacing",
+  "letter-spacing": "letterSpacing",
+  fontfeature: "fontFeature",
+  "font-feature": "fontFeature",
+  fontvariation: "fontVariation",
+  "font-variation": "fontVariation",
+};
 
 export function inferCategory(
   collectionName: string,
@@ -82,31 +103,27 @@ export function buildTokenKey(variableName: string, category: TokenCategory): st
   return normalized.join(".");
 }
 
-export function typographyFieldFromName(variableName: string): string | null {
-  const leaf = variableName.split("/").pop()?.toLowerCase() ?? "";
-  const normalized = leaf.replace(/_/g, "-");
+export function typographyFieldFromName(variableName: string): {
+  field: string;
+  /** When true, keep the full token path (e.g. base/type/family/primary). */
+  useFullPath: boolean;
+} | null {
+  const parts = variableName.split("/").map((part) => part.trim().toLowerCase());
+  const leaf = (parts[parts.length - 1] ?? "").replace(/_/g, "-");
 
-  const map: Record<string, string> = {
-    fontfamily: "fontFamily",
-    "font-family": "fontFamily",
-    family: "fontFamily",
-    fontsize: "fontSize",
-    "font-size": "fontSize",
-    size: "fontSize",
-    fontweight: "fontWeight",
-    "font-weight": "fontWeight",
-    weight: "fontWeight",
-    lineheight: "lineHeight",
-    "line-height": "lineHeight",
-    letterspacing: "letterSpacing",
-    "letter-spacing": "letterSpacing",
-    fontfeature: "fontFeature",
-    "font-feature": "fontFeature",
-    fontvariation: "fontVariation",
-    "font-variation": "fontVariation",
-  };
+  if (TYPO_FIELD_MAP[leaf]) {
+    return { field: TYPO_FIELD_MAP[leaf], useFullPath: false };
+  }
 
-  return map[normalized] ?? null;
+  // Paths like base/type/family/primary — parent segment names the field.
+  for (let index = parts.length - 2; index >= 0; index -= 1) {
+    const segment = parts[index].replace(/_/g, "-");
+    if (TYPO_FIELD_MAP[segment]) {
+      return { field: TYPO_FIELD_MAP[segment], useFullPath: true };
+    }
+  }
+
+  return null;
 }
 
 export function componentPropertyFromName(variableName: string): string | null {
